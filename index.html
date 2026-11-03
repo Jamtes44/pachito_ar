@@ -346,11 +346,12 @@ function animate() {
   renderer.render(scene, camera);
 }
 if (AR) {
-  msg.textContent = 'Apunta la cámara al target';
+  msg.textContent = 'Abriendo cámara… acepta el permiso (cierra otras pestañas que la usen)';
   try {
     await mindar.start();
-  } catch {
-    msg.textContent = 'No se pudo abrir la cámara (se necesita permiso y HTTPS o localhost)';
+    msg.textContent = 'Apunta la cámara al target';
+  } catch (e) {
+    msg.textContent = `No se pudo abrir la cámara: ${e?.name || e || 'permiso denegado'}`;
   }
 }
 renderer.setAnimationLoop(animate);
