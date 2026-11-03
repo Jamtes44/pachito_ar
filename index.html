@@ -32,8 +32,8 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-// ?ar → MindAR image tracking: the scene appears as a small diorama standing on the printed target.png
-const AR = new URLSearchParams(location.search).has('ar');
+// default → MindAR image tracking: Pachito appears standing in front of target.png; ?anim → plain 1920x1080 animation
+const AR = !new URLSearchParams(location.search).has('anim');
 const S = AR ? 0.12 : 1; // world scale: ~9-unit diorama ≈ target width (1 unit in MindAR)
 const stage = document.getElementById('stage');
 const msg = document.getElementById('msg');
@@ -56,7 +56,9 @@ if (AR) {
   mindar = new MindARThree({ container: stage, imageTargetSrc: await compileTarget('target.png') });
   ({ renderer, scene, camera } = mindar);
   world = new THREE.Group();
-  world.rotation.x = Math.PI / 2; // model is Y-up; the target's normal is +Z
+  // upright in the image plane facing the camera (target Y = up, +Z = toward viewer):
+  // feet on the target's bottom edge (3:2 → half height 0.333), ground sticking out toward the camera
+  world.position.set(-0.55 * S, -0.333, 3 * S);
   world.scale.setScalar(S);
   const anchor = mindar.addAnchor(0);
   anchor.group.add(world);
