@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pachito Voxel</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: relative; top: 50%; transform: translateY(-50%); width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9; margin: 0 auto; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #rec {
+    position: absolute; right: 16px; bottom: 16px; padding: 10px 18px; border: 0; border-radius: 999px;
+    font: 600 15px system-ui, sans-serif; color: #fff; background: #d6332b; cursor: pointer;
+    box-shadow: 0 2px 8px #0006;
+  }
+  #rec.on { background: #222; }
+  #stage.ar { position: fixed; inset: 0; transform: none; width: auto; aspect-ratio: auto; }
+  #msg { position: fixed; inset: auto 0 24px; text-align: center; color: #fff; font: 600 16px system-ui, sans-serif; text-shadow: 0 1px 4px #000; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+  "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+} }
+</script>
+</head>
+<body>
+<div id="stage"><button id="rec">● Grabar video</button></div>
+<div id="msg"></div>
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+// ?ar → MindAR image tracking: the scene appears as a small diorama standing on the printed target.png
+const AR = new URLSearchParams(location.search).has('ar');
+const S = AR ? 0.12 : 1; // world scale: ~9-unit diorama ≈ target width (1 unit in MindAR)
+const stage = document.getElementById('stage');
+const msg = document.getElementById('msg');
+let renderer, scene, camera, world, mindar;
+
+// shortcut: compiles target.png on every load (a few seconds); precompile a .mind file if startup gets slow
+async function compileTarget(src) {
+  await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js'); // defines window.MINDAR
+  const img = new Image();
+  img.src = src;
+  await img.decode();
+  const compiler = new MINDAR.IMAGE.Compiler();
+  await compiler.compileImageTargets([img], p => (msg.textContent = `Preparando target… ${p | 0}%`));
+  return URL.createObjectURL(new Blob([await compiler.exportData()]));
+}
+
+if (AR) {
+  stage.className = 'ar';
+  const { MindARThree } = await import('mindar-image-three');
+  mindar = new MindARThree({ container: stage, imageTargetSrc: await compileTarget('target.png') });
+  ({ renderer, scene, camera } = mindar);
+  world = new THREE.Group();
+  world.rotation.x = Math.PI / 2; // model is Y-up; the target's normal is +Z
+  world.scale.setScalar(S);
+  const anchor = mindar.addAnchor(0);
+  anchor.group.add(world);
+  anchor.onTargetFound = () => (msg.textContent = '');
+  anchor.onTargetLost = () => (msg.textContent = 'Apunta la cámara al target');
+} else {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(1920, 1080, false); // fixed 1920x1080 render; CSS scales it to fit the window
+  stage.prepend(renderer.domElement);
+  world = scene = new THREE.Scene();
+}
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+
+// record the canvas only (button isn't captured) at 1920x1080 / 30fps; MP4 where the browser supports it
+const recBtn = document.getElementById('rec');
+recBtn.hidden = AR; // the camera feed is a separate <video>, so a canvas recording would miss it
+let recorder;
+recBtn.onclick = () => {
+  if (recorder?.state === 'recording') return recorder.stop();
+  const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+  recorder = new MediaRecorder(renderer.domElement.captureStream(30), { mimeType: type, videoBitsPerSecond: 16e6 });
+  const chunks = [];
+  recorder.ondataavailable = e => chunks.push(e.data);
+  recorder.onstop = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob(chunks, { type }));
+    a.download = 'pachito.' + (type.includes('mp4') ? 'mp4' : 'webm');
+    a.click();
+    recBtn.textContent = '● Grabar video';
+    recBtn.classList.remove('on');
+  };
+  recorder.start(1000); // timeslice: without it, short MP4 takes came out empty in testing
+  recBtn.textContent = '■ Detener y descargar';
+  recBtn.classList.add('on');
+};
+
+if (!AR) {
+  const SKY = '#9fc4b4';
+  scene.background = new THREE.Color(SKY);
+  scene.fog = new THREE.Fog(SKY, 12, 34);
+  camera = new THREE.PerspectiveCamera(38, 1920 / 1080, 0.1, 100);
+}
+
+// ---------- lights (warm sun through trees, cool sky fill) ----------
+scene.add(new THREE.HemisphereLight('#dff1ff', '#3b4a22', 1.3));
+const sun = new THREE.DirectionalLight('#ffe0b0', 3.2);
+sun.position.set(5, 10, 8); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -10 * S, right: 10 * S, top: 10 * S, bottom: -6 * S, near: 0.5 * S, far: 40 * S });
+world.add(sun, sun.target); // sun + target ride with the diorama so shadows follow the tracked target
+const rim = new THREE.DirectionalLight('#ffc7e0', 1.4);
+rim.position.set(-5, 6, -6); scene.add(rim);
+
+// ---------- voxel helpers ----------
+const mats = {};
+const mat = hex => mats[hex] ??= new THREE.MeshStandardMaterial({ color: hex, roughness: 0.8 });
+function box(parent, [w, h, d], [x, y, z], color, r = 0.06) {
+  const m = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2, h / 2, d / 2)), mat(color));
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+let seed = 7;
+const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647); // stable forest layout
+
+// ---------- forest ----------
+const ground = AR ? new THREE.Mesh(new THREE.BoxGeometry(9, 0.4, 6), mat('#5d8a3c')) : new THREE.Mesh(new THREE.BoxGeometry(80, 1, 80), mat('#5d8a3c'));
+ground.position.set(AR ? 0.3 : 0, AR ? -0.2 : -0.5, 0); ground.receiveShadow = true;
+world.add(ground);
+
+const leafs = ['#2f5d2a', '#3d7232', '#27502a', '#4a8238'];
+function tree(x, z, s) {
+  const g = new THREE.Group();
+  g.position.set(x, 0, z); g.scale.setScalar(s); g.rotation.y = rand() * 3;
+  box(g, [0.7, 3.2, 0.7], [0, 1.6, 0], '#5a3a22', 0.08);
+  box(g, [3.0, 1.4, 3.0], [0, 3.4, 0], leafs[(rand() * 4) | 0], 0.15);
+  box(g, [2.3, 1.2, 2.3], [0, 4.6, 0], leafs[(rand() * 4) | 0], 0.15);
+  box(g, [1.4, 1.0, 1.4], [0, 5.6, 0], leafs[(rand() * 4) | 0], 0.15);
+  world.add(g);
+}
+if (AR) [[-3.3, -1.9], [3.8, -2.0], [-3.6, 1.6]].forEach(([x, z]) => tree(x, z, 0.75));
+else {
+  for (let i = 0; i < 46; i++) {
+    const z = -3 - rand() * 26, x = (rand() - 0.5) * (14 + -z * 1.4);
+    if (Math.abs(x) < 2.2 && z > -6) continue; // keep the clearing behind Pachito open
+    tree(x, z, 0.8 + rand() * 0.7);
+  }
+  [[-4.2, 1.5], [5, 0.5], [-5.5, -1.5], [6, -2.5]].forEach(([x, z]) => tree(x, z, 1.1));
+}
+
+// grass tufts, rocks, flowers, mushrooms
+for (let i = 0; i < (AR ? 45 : 90); i++) {
+  const x = AR ? 0.3 + (rand() - 0.5) * 8.4 : (rand() - 0.5) * 16, z = AR ? 2.7 - rand() * 5.4 : 4 - rand() * 14;
+  if (Math.abs(x - 0.4) < 2.4 && Math.abs(z - 0.4) < 1.6) continue;
+  const k = rand();
+  if (k < 0.55) box(world, [0.12, 0.35, 0.12], [x, 0.17, z], '#77a84a', 0.03);
+  else if (k < 0.75) box(world, [0.18, 0.18, 0.18], [x, 0.3, z], ['#f2e35a', '#f28ab2', '#ffffff'][(rand() * 3) | 0], 0.04);
+  else if (k < 0.9) box(world, [0.6, 0.35, 0.5], [x, 0.17, z], '#8b8f93', 0.1);
+  else { box(world, [0.1, 0.25, 0.1], [x, 0.12, z], '#efe6d6', 0.03); box(world, [0.34, 0.14, 0.34], [x, 0.3, z], '#c9362f', 0.05); }
+}
+
+// floating pollen/fireflies
+const motes = AR ? null : new THREE.Points(
+  new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(
+    Array.from({ length: 240 }, (_, i) => i % 3 === 0 ? (rand() - 0.5) * 14 : i % 3 === 1 ? rand() * 7 : 3 - rand() * 12), 3)),
+  new THREE.PointsMaterial({ color: '#fff6c8', size: 0.07, transparent: true, opacity: 0.8 }));
+if (motes) scene.add(motes);
+
+// ---------- Pachito ----------
+const C = { robe: '#3a2619', robeDark: '#2b1b12', rope: '#e8e2d2', skin: '#f2c9a5', beard: '#6b3d1f',
+  beardDark: '#552f17', eye: '#111111', white: '#ffffff', helmet: '#ee6a1c', mouth: '#7a1c1c' };
+const pachito = new THREE.Group();
+world.add(pachito);
+
+// friar robe + white shoes
+box(pachito, [2.0, 1.5, 1.25], [0, 0.95, 0], C.robe, 0.12);
+[-1, 1].forEach(s => box(pachito, [0.55, 0.26, 0.8], [s * 0.45, 0.13, 0.3], C.white, 0.1));
+const torso = box(pachito, [1.75, 1.5, 1.05], [0, 2.35, 0], C.robe, 0.14);
+box(pachito, [1.3, 0.35, 1.15], [0, 3.05, -0.05], C.robeDark, 0.12); // hood fold
+box(pachito, [2.05, 0.14, 1.3], [0, 1.7, 0], C.rope, 0.05);
+box(pachito, [0.1, 1.0, 0.1], [-0.45, 1.15, 0.68], C.rope, 0.03);
+[1.35, 0.95, 0.6].forEach(y => box(pachito, [0.18, 0.14, 0.18], [-0.45, y, 0.68], C.rope, 0.05));
+
+function arm(side) {
+  const a = new THREE.Group();
+  a.position.set(side * 1.02, 2.95, 0);
+  box(a, [0.6, 0.8, 0.7], [0, -0.32, 0], C.robe, 0.12);
+  a.elbow = new THREE.Group();
+  a.elbow.position.y = -0.7;
+  a.add(a.elbow);
+  box(a.elbow, [0.58, 0.7, 0.68], [0, -0.25, 0], C.robe, 0.12);
+  box(a.elbow, [0.68, 0.3, 0.76], [0, -0.48, 0], C.robeDark, 0.1);
+  a.hand = new THREE.Group(); // wrist, so the palm can stay flat
+  a.hand.position.y = -0.85;
+  a.hand.rotation.order = 'ZYX'; // undoes the arm's rotation
+  a.elbow.add(a.hand);
+  box(a.hand, [0.62, 0.55, 0.62], [0, 0, 0], C.white, 0.14);
+  box(a.hand, [0.2, 0.3, 0.22], [-side * 0.33, 0.13, 0.12], C.white, 0.08);
+  pachito.add(a);
+  return a;
+}
+const armL = arm(-1), armR = arm(1);
+armR.rotation.order = 'YXZ'; // y = sweep around the shoulder's vertical axis
+
+const head = new THREE.Group();
+head.position.set(0, 3.15, 0);
+pachito.add(head);
+box(head, [1.5, 1.5, 1.4], [0, 0.85, 0], C.skin, 0.12);
+box(head, [0.26, 0.28, 0.22], [0, 0.82, 0.78], C.skin, 0.06);
+function eye(side) {
+  const e = new THREE.Group();
+  e.position.set(side * 0.33, 1.08, 0.71);
+  box(e, [0.24, 0.38, 0.06], [0, 0, 0], C.eye, 0.03);
+  box(e, [0.08, 0.08, 0.04], [0.04, 0.09, 0.04], C.white, 0.02);
+  head.add(e);
+  return e;
+}
+const eyes = [eye(-1), eye(1)];
+[-1, 1].forEach(s => box(head, [0.38, 0.09, 0.1], [s * 0.33, 1.5, 0.72], C.beard, 0.03).rotation.z = -s * 0.2); // raised, soft brows
+box(head, [1.62, 0.75, 0.55], [0, 0.32, 0.5], C.beard, 0.12);
+[-1, 1].forEach(s => box(head, [0.22, 1.05, 1.2], [s * 0.78, 0.6, 0.05], C.beard, 0.08));
+box(head, [1.35, 0.55, 0.5], [0, -0.22, 0.48], C.beard, 0.12);
+box(head, [0.8, 0.35, 0.42], [0, -0.6, 0.45], C.beardDark, 0.12);
+box(head, [0.95, 0.2, 0.16], [0, 0.6, 0.83], C.beardDark, 0.06);
+// big open smile: mouth, teeth, upturned corners, rosy cheeks
+const mouth = new THREE.Group();
+mouth.position.set(0, 0.4, 0.79);
+head.add(mouth);
+box(mouth, [0.56, 0.22, 0.06], [0, -0.03, 0], C.mouth, 0.04);
+box(mouth, [0.44, 0.07, 0.04], [0, 0.05, 0.03], C.white, 0.02);
+[-1, 1].forEach(s => box(mouth, [0.12, 0.1, 0.06], [s * 0.3, 0.06, 0], C.mouth, 0.03));
+[-1, 1].forEach(s => box(head, [0.26, 0.14, 0.04], [s * 0.45, 0.84, 0.71], '#f2938f', 0.03));
+
+const hat = new THREE.Group();
+hat.position.y = 1.62;
+head.add(hat);
+box(hat, [1.62, 0.6, 1.5], [0, 0.3, 0], C.helmet, 0.18);
+box(hat, [1.9, 0.1, 1.75], [0, 0.03, 0], C.helmet, 0.04);
+box(hat, [1.62, 0.08, 0.45], [0, 0.02, 0.95], C.helmet, 0.03);
+box(hat, [0.18, 0.12, 1.52], [0, 0.62, 0], '#f58a45', 0.05);
+const label = document.createElement('canvas');
+label.width = 512; label.height = 160;
+const lg = label.getContext('2d');
+lg.fillStyle = '#fff'; lg.font = '900 130px system-ui, sans-serif';
+lg.textAlign = 'center'; lg.textBaseline = 'middle';
+lg.fillText('USB', 256, 88);
+const labelTex = new THREE.CanvasTexture(label);
+labelTex.colorSpace = THREE.SRGBColorSpace;
+const text = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 0.36), new THREE.MeshStandardMaterial({ map: labelTex, transparent: true }));
+text.position.set(0, 0.32, 0.76);
+hat.add(text);
+
+// ---------- wolf (sitting, head under Pachito's right hand) ----------
+const W = { fur: '#8a9099', light: '#dcdfe4', dark: '#4b515b', eye: '#e0a526', nose: '#151515' };
+const wolf = new THREE.Group();
+wolf.position.set(1.65, 0, 1.05);
+wolf.rotation.y = -0.8; // faces Pachito, rear points away from the robe
+wolf.scale.setScalar(1.2);
+world.add(wolf);
+box(wolf, [1.0, 0.7, 1.1], [0, 0.35, -0.25], W.fur, 0.14); // haunches
+box(wolf, [0.85, 1.0, 0.7], [0, 0.85, 0.05], W.fur, 0.14).rotation.x = -0.25; // chest
+box(wolf, [0.5, 0.6, 0.2], [0, 0.85, 0.38], W.light, 0.08).rotation.x = -0.25; // chest fur
+[-1, 1].forEach(s => {
+  box(wolf, [0.2, 0.75, 0.22], [s * 0.24, 0.38, 0.32], W.fur, 0.06);
+  box(wolf, [0.26, 0.14, 0.32], [s * 0.24, 0.07, 0.4], W.light, 0.05);
+  box(wolf, [0.3, 0.4, 0.6], [s * 0.45, 0.22, -0.2], W.fur, 0.1); // back legs
+});
+const tail = new THREE.Group();
+tail.position.set(0, 0.2, -0.75);
+wolf.add(tail);
+box(tail, [0.26, 0.26, 0.8], [0, 0, -0.35], W.fur, 0.1);
+box(tail, [0.28, 0.28, 0.3], [0, 0, -0.85], W.dark, 0.1);
+
+const wHead = new THREE.Group();
+wHead.position.set(0, 1.28, 0.2);
+wolf.add(wHead);
+box(wHead, [0.75, 0.6, 0.65], [0, 0, 0], W.fur, 0.1);
+box(wHead, [0.38, 0.28, 0.6], [0, -0.1, 0.55], W.light, 0.08); // snout
+box(wHead, [0.16, 0.1, 0.08], [0, 0.0, 0.86], W.nose, 0.03);
+box(wHead, [0.55, 0.12, 0.1], [0, -0.22, 0.3], W.light, 0.04); // cheek fur
+// ears pivot at the base so they can fold back while being petted
+const wEars = [-1, 1].map(s => {
+  const e = new THREE.Group();
+  e.position.set(s * 0.27, 0.26, -0.2);
+  e.rotation.z = -s * 0.35;
+  box(e, [0.2, 0.42, 0.12], [0, 0.2, 0], W.dark, 0.04);
+  wHead.add(e);
+  return e;
+});
+const wEyes = [-1, 1].map(s => box(wHead, [0.12, 0.1, 0.04], [s * 0.18, 0.08, 0.33], W.eye, 0.02));
+
+// ---------- animation ----------
+const gloveR = armR.hand.children[0], palmPt = new THREE.Vector3();
+const corners = (m, [w, h, d]) => [-1, 1].flatMap(x => [-1, 1].flatMap(y => [-1, 1].map(z => [m, new THREE.Vector3(x * w / 2, y * h / 2, z * d / 2)])));
+const handCorners = [...corners(gloveR, [0.62, 0.55, 0.62]), ...corners(armR.elbow.children[1], [0.68, 0.3, 0.76])]; // glove + sleeve cuff
+const clock = new THREE.Clock();
+function animate() {
+  const t = clock.getElapsedTime();
+
+  // camera: slow orbit + handheld wobble, full-body framing
+  if (!AR) {
+    camera.position.set(0.5 + Math.sin(t * 0.25) * 1.2, 3.1 + Math.sin(t * 1.1) * 0.04, 9.4 + Math.cos(t * 0.25) * 0.4);
+    camera.lookAt(0.6, 2.65, 0.5);
+  }
+
+  // Pachito: breathing, looking down fondly at the wolf
+  pachito.position.y = Math.sin(t * 2) * 0.02;
+  torso.scale.y = 1 + Math.sin(t * 2) * 0.01;
+  head.rotation.y = 0.45 + Math.sin(t * 0.8) * 0.05;
+  head.rotation.x = 0.22 + Math.abs(Math.sin(t * 4)) * 0.04;
+  head.rotation.z = -0.08 + Math.sin(t * 0.7) * 0.04;
+  mouth.scale.y = 1 + Math.abs(Math.sin(t * 4)) * 0.35; // happy chuckle
+
+  // gentle stroke: slow level sweep around the shoulder (YXZ order), palm resting flat on the wolf's head
+  const stroke = Math.sin(t * 1.8);
+  armR.rotation.set(-0.8 + stroke * 0.03, stroke * 0.09, 0.3);
+  armR.elbow.rotation.x = -0.35 - stroke * 0.05;
+  armR.hand.rotation.set(-armR.rotation.x - armR.elbow.rotation.x - 0.05, -armR.rotation.y, -armR.rotation.z);
+  armL.rotation.x = Math.sin(t * 2) * 0.04;
+  armL.rotation.z = -0.08;
+
+  const blink = (t % 3.7) < 0.12 ? 0.1 : 1;
+  eyes.forEach(e => (e.scale.y = blink));
+
+  // wolf: leans into the hand, eyes squint happily, tail wags
+  wHead.rotation.x = -0.03 + stroke * 0.02; // nearly level so the palm meets the head's center, not a raised corner
+  wHead.rotation.z = Math.sin(t * 1.5) * 0.03;
+  // head pushes up into the palm: its highest (tilted) corner sits right under the glove, never through it
+  scene.updateMatrixWorld();
+  // the glove is tilted forward, so use its lowest corner, not its bottom face
+  const palmY = Math.min(...handCorners.map(([m, c]) => wolf.worldToLocal(m.localToWorld(palmPt.copy(c))).y));
+  wHead.position.y = palmY -(0.3 + 0.325 * Math.sin(Math.abs(wHead.rotation.x)) + 0.375 * Math.sin(Math.abs(wHead.rotation.z)));
+  wEyes.forEach(e => (e.scale.y = 0.35 + Math.max(0, -stroke) * 0.5));
+  tail.rotation.y = Math.sin(t * 9) * 0.5;
+  wEars.forEach(e => (e.rotation.x = -1.35 + stroke * 0.08));
+
+  if (motes) {
+    motes.rotation.y = t * 0.02;
+    motes.position.y = Math.sin(t * 0.5) * 0.2;
+  }
+
+  renderer.render(scene, camera);
+}
+if (AR) {
+  msg.textContent = 'Apunta la cámara al target';
+  try {
+    await mindar.start();
+  } catch {
+    msg.textContent = 'No se pudo abrir la cámara (se necesita permiso y HTTPS o localhost)';
+  }
+}
+renderer.setAnimationLoop(animate);
+</script>
+</body>
+</html>
