@@ -64,7 +64,7 @@ if (AR) {
   const anchor = mindar.addAnchor(0);
   anchor.group.add(world);
   anchor.onTargetFound = () => (msg.textContent = '');
-  anchor.onTargetLost = () => (msg.textContent = 'Apunta la cámara al target');
+  anchor.onTargetLost = () => (msg.textContent = 'Apunta la cámara a Pachito');
 } else {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(1920, 1080, false); // fixed 1920x1080 render; CSS scales it to fit the window
@@ -350,7 +350,7 @@ if (AR) {
   msg.textContent = 'Abriendo cámara… acepta el permiso (cierra otras pestañas que la usen)';
   try {
     await mindar.start();
-    msg.textContent = 'Apunta la cámara al target';
+    msg.textContent = 'Apunta la cámara a Pachito';
   } catch (e) {
     msg.textContent = `No se pudo abrir la cámara: ${e?.name || e || 'permiso denegado'}`;
   }
