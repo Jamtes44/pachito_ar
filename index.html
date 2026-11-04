@@ -32,14 +32,14 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
-// default → MindAR image tracking: Pachito appears standing in front of target.png; ?anim → plain 1920x1080 animation
+// default → MindAR image tracking: Pachito appears standing in front of target.jpg; ?anim → plain 1920x1080 animation
 const AR = !new URLSearchParams(location.search).has('anim');
 const S = AR ? 0.12 : 1; // world scale: ~9-unit diorama ≈ target width (1 unit in MindAR)
 const stage = document.getElementById('stage');
 const msg = document.getElementById('msg');
 let renderer, scene, camera, world, mindar;
 
-// shortcut: compiles target.png on every load (a few seconds); precompile a .mind file if startup gets slow
+// shortcut: compiles target.jpg on every load (a few seconds); precompile a .mind file if startup gets slow
 async function compileTarget(src) {
   await import('https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js'); // defines window.MINDAR
   const img = new Image();
@@ -47,18 +47,19 @@ async function compileTarget(src) {
   await img.decode();
   const compiler = new MINDAR.IMAGE.Compiler();
   await compiler.compileImageTargets([img], p => (msg.textContent = `Preparando target… ${p | 0}%`));
-  return URL.createObjectURL(new Blob([await compiler.exportData()]));
+  return { url: URL.createObjectURL(new Blob([await compiler.exportData()])), aspect: img.height / img.width };
 }
 
 if (AR) {
   stage.className = 'ar';
   const { MindARThree } = await import('mindar-image-three');
-  mindar = new MindARThree({ container: stage, imageTargetSrc: await compileTarget('target.png') });
+  const target = await compileTarget('target.jpg');
+  mindar = new MindARThree({ container: stage, imageTargetSrc: target.url });
   ({ renderer, scene, camera } = mindar);
   world = new THREE.Group();
   // upright in the image plane facing the camera (target Y = up, +Z = toward viewer):
-  // feet on the target's bottom edge (3:2 → half height 0.333), ground sticking out toward the camera
-  world.position.set(-0.55 * S, -0.333, 3 * S);
+  // feet on the target's bottom edge (target width = 1, so half height = aspect / 2), ground sticking out toward the camera
+  world.position.set(-0.55 * S, -target.aspect / 2, 3 * S);
   world.scale.setScalar(S);
   const anchor = mindar.addAnchor(0);
   anchor.group.add(world);
