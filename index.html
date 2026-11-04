@@ -15,6 +15,8 @@
   }
   #rec.on { background: #222; }
   #stage.ar { position: fixed; inset: 0; transform: none; width: auto; aspect-ratio: auto; }
+  #credit { position: fixed; top: 12px; left: 12px; z-index: 10; padding: 6px 12px; border-radius: 999px;
+    background: #000a; color: #fff; font: 600 13px system-ui, sans-serif; text-decoration: none; }
   #msg { position: fixed; inset: auto 0 24px; text-align: center; color: #fff; font: 600 16px system-ui, sans-serif; text-shadow: 0 1px 4px #000; }
 </style>
 <script type="importmap">
@@ -28,6 +30,7 @@
 <body>
 <div id="stage"><button id="rec">● Grabar video</button></div>
 <div id="msg"></div>
+<a id="credit" href="https://www.instagram.com/jamtes44/" target="_blank" rel="noopener">Hecho por @jamtes44</a>
 <script type="module">
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
@@ -54,7 +57,8 @@ if (AR) {
   stage.className = 'ar';
   const { MindARThree } = await import('mindar-image-three');
   const target = await compileTarget('target.jpg');
-  mindar = new MindARThree({ container: stage, imageTargetSrc: target.url });
+  // stronger One Euro smoothing than MindAR's default (minCF 0.001, beta 1000): less jitter, a little more lag
+  mindar = new MindARThree({ container: stage, imageTargetSrc: target.url, filterMinCF: 0.0001, filterBeta: 0.001 });
   ({ renderer, scene, camera } = mindar);
   world = new THREE.Group();
   // upright in the image plane facing the camera (target Y = up, +Z = toward viewer):
